@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>LanPToP Chat + Audio</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 30px;
+            background: #f0f2f5;
+        }
+
+        h2 {
+            color: #333;
+        }
+
+        #container {
+            max-width: 600px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        #messages {
+            border: 1px solid #ccc;
+            height: 300px;
+            overflow-y: scroll;
+            padding: 10px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+
+        input[type="text"],
+        button {
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            width: calc(100% - 22px);
+            box-sizing: border-box;
+        }
+
+        button {
+            cursor: pointer;
+            border: none;
+            background-color: #007bff;
+            color: white;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .controls,
+        .chat-box {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="container">
+        <h2>LanPToP Chat with Audio</h2>
+
+        <div class="chat-box" id="chatBox">
+            <h3>Chat</h3>
+            <div id="messages"></div>
+            <input type="text" id="input" placeholder="Type a message..." />
+            <button onclick="sendMessage()">Send</button>
+        </div>
+
+        <div class="controls" id="audioControls">
+            <h3>Audio Controls</h3>
+            <input type="text" id="remoteIp" placeholder="Enter Remote IP for Audio" />
+            <button onclick="startAudioCall()">Start Audio Call</button>
+            <button onclick="startReceiving()">Start Receiving</button>
+            <button onclick="stopAudioCall()">Stop Audio</button>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+
+        window.onload = function () {
+            ws = new WebSocket("ws://" + window.location.host + "/ws/chat");
+
+            ws.onopen = () => {
+                logMessage("🟢 Connected to WebSocket");
+            };
+
+            ws.onmessage = function (event) {
+                logMessage("🟢 " + event.data);
+            };
+
+            ws.onclose = () => {
+                logMessage("🔴 WebSocket Disconnected");
+            };
+
+            ws.onerror = (e) => {
+                console.error("WebSocket error:", e);
+                logMessage("⚠️ WebSocket Error");
+            };
+        };
+
+        function logMessage(text) {
+            const messages = document.getElementById("messages");
+            const msg = document.createElement("div");
+            msg.textContent = text;
+            messages.appendChild(msg);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById("input");
+            if (input.value.trim() !== "") {
+                logMessage("🟣 You: " + input.value);
+                ws.send(input.value);
+                input.value = "";
+            }
+        }
+
+        function startAudioCall() {
+            const ip = document.getElementById("remoteIp").value.trim();
+            if (!ip) return alert("Enter IP address to call");
+            fetch(`/audio/start?ip=${ip}`)
+                .then(res => res.json())
+                .then(data => alert(data.message || "Audio started"))
+                .catch(err => alert("Error: " + err));
+        }
+
+        function startReceiving() {
+            fetch(`/audio/receive`)
+                .then(res => res.json())
+                .then(data => alert(data.message || "Receiving started"))
+                .catch(err => alert("Error: " + err));
+        }
+
+        function stopAudioCall() {
+            fetch(`/audio/stop`)
+                .then(res => res.json())
+                .then(data => alert(data.message || "Audio stopped"))
+                .catch(err => alert("Error: " + err));
+        }
+    </script>
+</body>
+
+</html>
