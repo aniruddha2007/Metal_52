@@ -1,4 +1,4 @@
-# main.py - Fixed with UDP message fragmentation and proper signaling
+# main.py - Complete working version with WebRTC signaling
 import os
 import json
 import asyncio
@@ -14,7 +14,6 @@ from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 from typing import Dict, Set
 import uuid
-import concurrent.futures
 
 # Configuration
 NODE_ID = int(os.getenv('NODE_ID', '0'))
@@ -28,11 +27,7 @@ active_connections: Dict[str, WebSocket] = {}
 peer_nodes: Dict[str, Dict] = {}
 udp_server_running = False
 main_event_loop = None
-message_fragments: Dict[str, Dict] = {}  # For large message reconstruction
-
-# Constants
-MAX_UDP_SIZE = 900  # Safe UDP packet size
-FRAGMENT_TIMEOUT = 30  # seconds
+message_fragments: Dict[str, Dict] = {}
 
 def get_local_ip():
     try:
@@ -42,82 +37,7 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
-def fragment_large_message(message: str, msg_id: str = None) -> list:
-    """Fragment large messages for UDP transmission"""
-    if len(message) <= MAX_UDP_SIZE:
-        return [message]
-    
-    if not msg_id:
-        msg_id = hashlib.md5(message.encode()).hexdigest()[:8]
-    
-    fragments = []
-    chunk_size = MAX_UDP_SIZE - 100  # Reserve space for headers
-    total_chunks = (len(message) + chunk_size - 1) // chunk_size
-    
-    for i in range(total_chunks):
-        start = i * chunk_size
-        end = min(start + chunk_size, len(message))
-        chunk_data = message[start:end]
-        
-        fragment = {
-            "type": "fragment",
-            "msg_id": msg_id,
-            "chunk": i,
-            "total": total_chunks,
-            "data": base64.b64encode(chunk_data.encode()).decode()
-        }
-        fragments.append(json.dumps(fragment))
-    
-    return fragments
-
-def reconstruct_fragmented_message(fragment_data: dict) -> str:
-    """Reconstruct fragmented messages"""
-    global message_fragments
-    
-    msg_id = fragment_data["msg_id"]
-    chunk_num = fragment_data["chunk"]
-    total_chunks = fragment_data["total"]
-    data = base64.b64decode(fragment_data["data"]).decode()
-    
-    # Initialize message storage
-    if msg_id not in message_fragments:
-        message_fragments[msg_id] = {
-            "chunks": {},
-            "total": total_chunks,
-            "timestamp": datetime.now().timestamp()
-        }
-    
-    # Store chunk
-    message_fragments[msg_id]["chunks"][chunk_num] = data
-    
-    # Check if complete
-    if len(message_fragments[msg_id]["chunks"]) == total_chunks:
-        # Reconstruct message
-        complete_message = ""
-        for i in range(total_chunks):
-            complete_message += message_fragments[msg_id]["chunks"][i]
-        
-        # Clean up
-        del message_fragments[msg_id]
-        return complete_message
-    
-    return None  # Still waiting for more fragments
-
-def cleanup_old_fragments():
-    """Clean up expired message fragments"""
-    global message_fragments
-    current_time = datetime.now().timestamp()
-    expired_ids = []
-    
-    for msg_id, msg_data in message_fragments.items():
-        if current_time - msg_data["timestamp"] > FRAGMENT_TIMEOUT:
-            expired_ids.append(msg_id)
-    
-    for msg_id in expired_ids:
-        del message_fragments[msg_id]
-
 async def broadcast_to_websockets(message: Dict):
-    """Broadcast message to all WebSocket connections on this node"""
     if not active_connections:
         return
         
@@ -129,12 +49,10 @@ async def broadcast_to_websockets(message: Dict):
             print(f"[WS] Failed to send to {conn_id}: {e}")
             disconnected.append(conn_id)
     
-    # Clean up disconnected clients
     for conn_id in disconnected:
         del active_connections[conn_id]
 
 def thread_safe_broadcast(message_dict: Dict):
-    """Thread-safe wrapper to broadcast to WebSockets from UDP thread"""
     global main_event_loop
     if main_event_loop and not main_event_loop.is_closed():
         try:
@@ -146,9 +64,7 @@ def thread_safe_broadcast(message_dict: Dict):
         except Exception as e:
             print(f"[UDP] Thread-safe broadcast failed: {e}")
             return False
-    else:
-        print("[UDP] Main event loop not available")
-        return False
+    return False
 
 def start_udp_listener():
     global udp_server_running
@@ -165,56 +81,77 @@ def start_udp_listener():
             
             while udp_server_running:
                 try:
-                    data, addr = sock.recvfrom(2048)  # Increased buffer size
+                    data, addr = sock.recvfrom(4096)  # Increased buffer for WebRTC messages
                     raw_message = data.decode('utf-8')
                     
-                    # Skip our own messages
                     if addr[0] == get_local_ip():
                         continue
                     
                     try:
-                        # Try to parse as JSON first
                         parsed = json.loads(raw_message)
                         
-                        # Handle fragmented messages
-                        if parsed.get("type") == "fragment":
-                            complete_message = reconstruct_fragmented_message(parsed)
-                            if complete_message:
-                                # Process the complete message
-                                process_complete_message(complete_message, addr[0])
-                            # If not complete, just wait for more fragments
-                            continue
+                        if parsed.get("type") == "webrtc_signal":
+                            signal = parsed.get("signal", {})
+                            signal_type = signal.get("type", "unknown")
+                            from_node = parsed.get("from_node", "unknown")
+                            
+                            print(f"[UDP] WebRTC signal received: {signal_type} from Node {from_node}")
+                            
+                            # CRITICAL: Forward to WebSocket clients immediately
+                            thread_safe_broadcast({
+                                "type": "webrtc_signal",
+                                "signal": signal,
+                                "from_node": from_node,
+                                "sender_ip": addr[0],
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                        elif parsed.get("type") == "call_request":
+                            call_type = parsed.get("call_type", "audio")
+                            caller = parsed.get("caller", "unknown")
+                            from_node = parsed.get("from_node", "unknown")
+                            
+                            print(f"[UDP] Call request: {call_type} from {caller} (Node {from_node})")
+                            
+                            thread_safe_broadcast({
+                                "type": "call_request",
+                                "call_type": call_type,
+                                "caller": caller,
+                                "from_node": from_node,
+                                "caller_ip": addr[0],
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
                         else:
                             # Regular message
-                            process_complete_message(raw_message, addr[0])
-                            
-                    except json.JSONDecodeError:
-                        # Handle non-JSON messages (legacy chat)
-                        if raw_message.startswith("CALL_REQUEST:"):
-                            parts = raw_message.split(":")
-                            if len(parts) >= 3:
-                                caller_node = parts[1]
-                                call_type = parts[2]
-                                
-                                call_message = {
-                                    "type": "call_request",
-                                    "call_type": call_type,
-                                    "caller": caller_node,
-                                    "caller_ip": addr[0],
-                                    "timestamp": datetime.now().isoformat()
-                                }
-                                thread_safe_broadcast(call_message)
-                        else:
-                            # Regular chat message
                             thread_safe_broadcast({
                                 "type": "udp_message",
                                 "message": raw_message,
                                 "sender": f"Network@{addr[0]}",
                                 "timestamp": datetime.now().isoformat()
                             })
-                    
-                    # Cleanup old fragments periodically
-                    cleanup_old_fragments()
+                            
+                    except json.JSONDecodeError:
+                        # Legacy format handling
+                        if raw_message.startswith("CALL_REQUEST:"):
+                            parts = raw_message.split(":")
+                            if len(parts) >= 3:
+                                caller_node = parts[1]
+                                call_type = parts[2]
+                                thread_safe_broadcast({
+                                    "type": "call_request",
+                                    "call_type": call_type,
+                                    "caller": caller_node,
+                                    "caller_ip": addr[0],
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                        else:
+                            thread_safe_broadcast({
+                                "type": "udp_message",
+                                "message": raw_message,
+                                "sender": f"Network@{addr[0]}",
+                                "timestamp": datetime.now().isoformat()
+                            })
                         
                 except socket.timeout:
                     continue
@@ -226,55 +163,13 @@ def start_udp_listener():
             print(f"[UDP] Failed to start listener: {e}")
         finally:
             sock.close()
-            print(f"[UDP] Node {NODE_ID} UDP listener stopped")
     
     thread = threading.Thread(target=udp_listener, daemon=True)
     thread.start()
-
-def process_complete_message(message: str, sender_ip: str):
-    """Process a complete message (either direct or reconstructed)"""
-    if message.startswith("WEBRTC_SIGNAL:"):
-        try:
-            signal_data = message[14:]  # Remove "WEBRTC_SIGNAL:" prefix
-            signal_json = json.loads(signal_data)
-            print(f"[UDP] Processing WebRTC signal from {sender_ip}: {signal_json.get('type', 'unknown')}")
-            
-            thread_safe_broadcast({
-                "type": "webrtc_signal", 
-                "signal": signal_json,
-                "sender_ip": sender_ip,
-                "timestamp": datetime.now().isoformat()
-            })
-        except json.JSONDecodeError as e:
-            print(f"[UDP] Failed to parse WebRTC signal: {e}")
-    elif message.startswith("CALL_REQUEST:"):
-        # Handle call requests
-        parts = message.split(":")
-        if len(parts) >= 3:
-            caller_node = parts[1]
-            call_type = parts[2]
-            
-            call_message = {
-                "type": "call_request",
-                "call_type": call_type,
-                "caller": caller_node,
-                "caller_ip": sender_ip,
-                "timestamp": datetime.now().isoformat()
-            }
-            thread_safe_broadcast(call_message)
-    else:
-        # Regular chat message
-        thread_safe_broadcast({
-            "type": "udp_message",
-            "message": message,
-            "sender": f"Network@{sender_ip}",
-            "timestamp": datetime.now().isoformat()
-        })
-
+    
 def broadcast_udp_message(message: str):
     try:
         udp_ports = [9001, 9002, 9003, 9004, 9005]
-        fragments = fragment_large_message(message)
         
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -284,15 +179,12 @@ def broadcast_udp_message(message: str):
             for port in udp_ports:
                 if port != UDP_PORT:
                     try:
-                        # Send all fragments
-                        for fragment in fragments:
-                            sock.sendto(fragment.encode('utf-8'), ("127.0.0.1", port))
-                            sock.sendto(fragment.encode('utf-8'), (get_local_ip(), port))
+                        sock.sendto(message.encode('utf-8'), ("127.0.0.1", port))
                         sent_count += 1
                     except Exception:
                         pass
                         
-        print(f"[UDP] Broadcast sent {len(fragments)} fragments to {sent_count} targets")
+        print(f"[UDP] Broadcast sent to {sent_count} targets")
         return True
     except Exception as e:
         print(f"[UDP] Broadcast failed: {e}")
@@ -304,14 +196,11 @@ async def lifespan(app: FastAPI):
     main_event_loop = asyncio.get_running_loop()
     
     print(f"[METAL-52] Node {NODE_ID} starting on {get_local_ip()}:{WEB_PORT}")
-    print(f"[METAL-52] Ports: Web={WEB_PORT}, UDP={UDP_PORT}, Audio={AUDIO_PORT}, Video={VIDEO_PORT}")
-    
     start_udp_listener()
     yield
     
     global udp_server_running
     udp_server_running = False
-    print(f"[METAL-52] Node {NODE_ID} shutting down")
 
 app = FastAPI(
     title=f"Metal-52 Node {NODE_ID}",
@@ -360,8 +249,7 @@ async def websocket_chat_endpoint(websocket: WebSocket):
     
     await websocket.send_text(json.dumps({
         "type": "system",
-        "message": f"Connected to Metal-52 Node {NODE_ID} ({get_local_ip()}:{WEB_PORT})",
-        "sender": "System",
+        "message": f"Connected to Metal-52 Node {NODE_ID}",
         "timestamp": datetime.now().isoformat()
     }))
     
@@ -370,26 +258,47 @@ async def websocket_chat_endpoint(websocket: WebSocket):
             message = await websocket.receive_text()
             
             try:
-                # Try to parse as JSON for WebRTC signaling
                 data = json.loads(message)
                 
                 if data.get("type") == "webrtc_signal":
-                    # Handle WebRTC signaling with fragmentation support
-                    signal_json = json.dumps(data["signal"])
-                    webrtc_message = f"WEBRTC_SIGNAL:{signal_json}"
-                    success = broadcast_udp_message(webrtc_message)
+                    # CRITICAL: Enhanced WebRTC signaling
+                    signal_type = data["signal"].get("type", "unknown")
+                    print(f"[WS] WebRTC Signal: {signal_type} from Node {NODE_ID}")
                     
-                    print(f"[WS] WebRTC signal broadcast: {data['signal'].get('type', 'unknown')}, success: {success}")
+                    # Broadcast to UDP with enhanced format
+                    webrtc_message = {
+                        "type": "webrtc_signal",
+                        "signal": data["signal"],
+                        "from_node": NODE_ID,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    success = broadcast_udp_message(json.dumps(webrtc_message))
+                    print(f"[WS] WebRTC signal broadcast success: {success}")
+                    
+                    # Also broadcast locally for debugging
+                    await broadcast_to_websockets({
+                        "type": "webrtc_signal_sent",
+                        "signal_type": signal_type,
+                        "success": success,
+                        "timestamp": datetime.now().isoformat()
+                    })
                     
                 elif data.get("type") == "call_request":
-                    # Handle outgoing call requests
+                    # Enhanced call request handling
                     call_type = data.get("call_type", "audio")
                     caller = data.get("caller", f"node-{NODE_ID}")
                     
-                    call_message = f"CALL_REQUEST:{caller}:{call_type}"
-                    success = broadcast_udp_message(call_message)
+                    call_message = {
+                        "type": "call_request",
+                        "call_type": call_type,
+                        "caller": caller,
+                        "from_node": NODE_ID,
+                        "timestamp": datetime.now().isoformat()
+                    }
                     
-                    print(f"[WS] Broadcasting call request: {call_message}, success: {success}")
+                    success = broadcast_udp_message(json.dumps(call_message))
+                    print(f"[WS] Call request broadcast: {call_type}, success: {success}")
                     
                 else:
                     # Regular chat message
@@ -417,18 +326,14 @@ async def websocket_chat_endpoint(websocket: WebSocket):
                 
     except WebSocketDisconnect:
         del active_connections[connection_id]
-        print(f"[WS] Client {connection_id} disconnected (Remaining: {len(active_connections)})")
-
+        print(f"[WS] Client {connection_id} disconnected")
+        
 @app.get("/api/status")
 def get_status():
     return {
         "node_id": NODE_ID,
-        "ip": get_local_ip(),
-        "port": WEB_PORT,
         "active_connections": len(active_connections),
-        "peer_nodes": len(peer_nodes),
         "udp_server_running": udp_server_running,
-        "message_fragments": len(message_fragments),
         "ports": {
             "web": WEB_PORT,
             "udp": UDP_PORT,

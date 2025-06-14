@@ -7,7 +7,7 @@ import os
 @dataclass
 class AppConfig:
     udp_port: int = 9001
-    broadcast_ip: str = "192.168.1.255"
+    broadcast_ip: str = "192.168.1.8"
     audio_port: int = 5060
     video_port: int = 5056
     

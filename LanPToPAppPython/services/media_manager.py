@@ -36,6 +36,7 @@ class MediaManager:
             
         try:
             self._start_audio_sender(remote_ip)
+            printf($"remote_ip: {remote_ip}")
             self.active_sessions['audio_send'] = True
             return {"status": "success", "message": f"Audio started to {remote_ip}"}
         except Exception as e:
