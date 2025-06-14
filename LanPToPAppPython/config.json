@@ -1,0 +1,6 @@
+{
+  "udp_port": 9001,
+  "broadcast_ip": "192.168.1.255",
+  "audio_port": 5060,
+  "video_port": 5056
+}
