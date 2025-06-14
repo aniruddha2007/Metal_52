@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <title>LanPToP Chat + Audio</title>
+    <title>LanPToP Chat + Audio + Video</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -15,7 +15,7 @@
         }
 
         #container {
-            max-width: 600px;
+            max-width: 700px;
             margin: auto;
             background: white;
             padding: 20px;
@@ -60,12 +60,23 @@
         .chat-box {
             margin-top: 20px;
         }
+
+        .video-section {
+            margin-top: 20px;
+        }
+
+        video {
+            width: 100%;
+            max-height: 300px;
+            background: black;
+            border-radius: 8px;
+        }
     </style>
 </head>
 
 <body>
     <div id="container">
-        <h2>LanPToP Chat with Audio</h2>
+        <h2>LanPToP Chat with Audio & Video</h2>
 
         <div class="chat-box" id="chatBox">
             <h3>Chat</h3>
@@ -76,15 +87,29 @@
 
         <div class="controls" id="audioControls">
             <h3>Audio Controls</h3>
-            <input type="text" id="remoteIp" placeholder="Enter Remote IP for Audio" />
+            <input type="text" id="remoteIp" placeholder="Enter Remote IP for Audio/Video" />
             <button onclick="startAudioCall()">Start Audio Call</button>
-            <button onclick="startReceiving()">Start Receiving</button>
+            <button onclick="startReceiving()">Start Receiving Audio</button>
             <button onclick="stopAudioCall()">Stop Audio</button>
+
+            <h3>Video Controls</h3>
+            <button onclick="startVideoCall()">Start Video Call</button>
+            <button onclick="startVideoReceive()">Start Receiving Video</button>
+            <button onclick="stopVideoCall()">Stop Video</button>
+        </div>
+
+        <div class="video-section">
+            <h3>Video Preview</h3>
+            <video id="localVideo" autoplay muted playsinline></video>
+
+            <h4 style="margin-top: 10px;">Remote Video</h4>
+            <img id="remoteVideo" style="width: 100%; border-radius: 8px;" />
         </div>
     </div>
 
     <script>
         let ws;
+        let currentIP = "";
 
         window.onload = function () {
             ws = new WebSocket("ws://" + window.location.host + "/ws/chat");
@@ -105,6 +130,14 @@
                 console.error("WebSocket error:", e);
                 logMessage("⚠️ WebSocket Error");
             };
+
+            // Start local camera preview
+            navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                .then(stream => {
+                    const video = document.getElementById("localVideo");
+                    video.srcObject = stream;
+                })
+                .catch(err => console.error("Camera access failed:", err));
         };
 
         function logMessage(text) {
@@ -127,6 +160,7 @@
         function startAudioCall() {
             const ip = document.getElementById("remoteIp").value.trim();
             if (!ip) return alert("Enter IP address to call");
+            currentIP = ip;
             fetch(`/audio/start?ip=${ip}`)
                 .then(res => res.json())
                 .then(data => alert(data.message || "Audio started"))
@@ -145,6 +179,32 @@
                 .then(res => res.json())
                 .then(data => alert(data.message || "Audio stopped"))
                 .catch(err => alert("Error: " + err));
+        }
+
+        function startVideoCall() {
+            const ip = document.getElementById("remoteIp").value.trim();
+            if (!ip) return alert("Enter IP to call");
+
+            document.getElementById("remoteVideo").src = `http://${ip}:8000/video_feed`; // 8000 or your backend port
+
+            fetch(`/video/start?ip=${ip}`)
+                .then(res => res.json())
+                .then(data => alert(data.message))
+                .catch(err => alert("Video start failed"));
+        }
+
+        function startVideoReceive() {
+            fetch(`/video/receive`)
+                .then(res => res.json())
+                .then(data => alert(data.message || "Receiving video"))
+                .catch(err => alert("Video receive failed"));
+        }
+
+        function stopVideoCall() {
+            fetch(`/video/stop`)
+                .then(res => res.json())
+                .then(data => alert(data.message || "Video stopped"))
+                .catch(err => alert("Stop failed"));
         }
     </script>
 </body>

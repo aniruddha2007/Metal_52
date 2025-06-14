@@ -5,9 +5,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import asyncio
-
+from services import video_call
 from services import udp_helper, audio_call
 from services.websocket_manager import register, unregister
+from fastapi.responses import StreamingResponse
+import cv2
+
+camera = None
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -60,3 +64,51 @@ def audio_stop():
         return {"message": "Audio stopped"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/video/start")
+def start_video(ip: str):
+    try:
+        video_call.start_video_sender(ip)
+        return {"message": f"Started sending video to {ip}"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/video/receive")
+def receive_video():
+    try:
+        video_call.start_video_receiver()
+        return {"message": "Started video receiving"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/video/stop")
+def stop_video():
+    global camera
+    if camera:
+        camera.release()
+        camera = None
+    return {"message": "Video streaming stopped"}
+
+def generate_video_stream():
+    global camera
+    if camera is None:
+        camera = cv2.VideoCapture(0)
+
+    if not camera.isOpened():
+        raise RuntimeError("Could not open webcam.")
+
+    while True:
+        success, frame = camera.read()
+        if not success:
+            continue
+
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (
+            b'--frame\r\n'
+            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
+        )
+
+@app.get("/video_feed")
+def video_feed():
+    return StreamingResponse(generate_video_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
